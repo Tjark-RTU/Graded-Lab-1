@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdbool.h>
+#include <math.h>
 
 typedef enum{
     TOK_NUM,
@@ -24,6 +26,117 @@ typedef struct{
     double value;
     Operator op;
 } Token;
+
+typedef struct {
+    Token *tokens;
+    size_t pos;
+} Parser;
+
+double expr(Parser *p);
+double term(Parser *p);
+double unary(Parser *p);
+double power(Parser *p);
+double primary(Parser *p);
+
+//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+bool match(Parser *p, Operator op)
+{
+    Token t = p->tokens[p->pos];
+
+    if(t.type == TOK_OP && t.op == op) {
+        p->pos++;
+        return true;
+    }
+    return false;
+}
+
+//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+double expr(Parser *p)
+{
+    double total = term(p);
+    while(match(p, OP_ADD) || match(p, OP_SUB))
+    {
+        Operator op = p->tokens[p->pos -1].op;
+        double right = term(p);
+
+        if(op == OP_ADD)
+        {
+            total += right;
+        }
+        else
+        {
+            total -= right;
+        }
+    }
+    return total;
+}
+
+//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+double term(Parser *p)
+{
+    double total = unary(p);
+    while(match(p, OP_MUL) || match(p, OP_DIV))
+    {
+        Operator op = p->tokens[p->pos -1].op;
+        double right = unary(p);
+
+        if(op == OP_MUL)
+        {
+            total *= right;
+        }
+        else
+        {
+            total /= right;
+        }
+    }
+    return total;
+
+}
+
+//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+double unary(Parser *p){
+    if (match(p, OP_SUB)) {
+        return -unary(p);
+    }
+    if(match(p, OP_ADD)){
+        return unary(p);
+    }
+    return power(p);
+}
+
+//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+double power(Parser *p){
+    double base = primary(p);
+
+    if(match(p, OP_POW)) {
+        double exponent = power(p);
+        return pow(base, exponent);
+    }
+    return base;
+}
+
+//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+double primary(Parser *p){
+    Token t = p->tokens[p->pos];
+    
+    if(t.type == TOK_NUM) {
+        p->pos++;
+        return t.value;
+    }
+
+    if (match(p, OP_L)) {
+        double value = expr(p);
+        return value;
+    }
+    exit(1);
+}
+
+//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+double parse(Parser *p){
+    double result = expr(p);
+
+    return result;
+}
 
 
 //Read file function on the basis of: https://www.fundza.com/c4serious/fileIO_reading_all/index.html
@@ -148,5 +261,11 @@ int main(void) {
     printf("%s\n", text);
     Token * tokens = tokenize(text);
     print_tokens(tokens);
+    Parser parser;
+    parser.tokens = tokens;
+    parser.pos = 0;
+    double result = parse(&parser);
+    printf("Result: %f\n", result);
+    
     
 }
