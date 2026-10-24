@@ -23,8 +23,11 @@ typedef enum{
 
 typedef struct{
     TokenType type;
-    double value;
+    double floatValue;
+    long intValue;
+    bool isInteger;
     Operator op;
+    int position; 
 } Token;
 
 typedef struct {
@@ -32,11 +35,41 @@ typedef struct {
     size_t pos;
 } Parser;
 
-double expr(Parser *p);
-double term(Parser *p);
-double unary(Parser *p);
-double power(Parser *p);
-double primary(Parser *p);
+typedef struct {
+    int position;
+    double floatValue;
+    long intValue;
+    bool isInteger;
+} Number;
+
+Number expr(Parser *p);
+Number term(Parser *p);
+Number power(Parser *p);
+Number primary(Parser *p);
+
+
+double convertToDouble(Number num){
+    if(num.isInteger){
+        return (float)num.intValue;
+    }
+    return num.floatValue;
+}
+
+int minPosition(Number num1, Number num2){
+    if(num1.position < num2.position){
+        return num1.position;
+    }
+    return num2.position;
+}
+
+long integerPower(long num1, long num2){
+    long result = num1;
+    for(int i = 1; i < num2; i++){
+        result = result * num1;
+    }
+    return result;
+}
+
 
 //Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
 bool match(Parser *p, Operator op)
@@ -51,89 +84,158 @@ bool match(Parser *p, Operator op)
 }
 
 //Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
-double expr(Parser *p)
+Number expr(Parser *p)
 {
-    double total = term(p);
+    Number total = term(p);
     while(match(p, OP_ADD) || match(p, OP_SUB))
     {
         Operator op = p->tokens[p->pos -1].op;
-        double right = term(p);
+        Number right = term(p);
 
+        Number num;
+        num.position = minPosition(total, right);
         if(op == OP_ADD)
         {
-            total += right;
+            if(total.isInteger == false || right.isInteger == false){
+                num.floatValue = convertToDouble(total) + convertToDouble(right);
+                num.intValue = 0;
+                num.isInteger = false;
+            }
+            else{
+                num.intValue = total.intValue + right.intValue;
+                num.floatValue = 0;
+                num.isInteger = true;
+            }
         }
         else
         {
-            total -= right;
+            if(total.isInteger == false || right.isInteger == false){
+                num.floatValue = convertToDouble(total) - convertToDouble(right);
+                num.intValue = 0;
+                num.isInteger = false;
+            }
+            else{
+                num.intValue = total.intValue - right.intValue;
+                num.floatValue = 0;
+                num.isInteger = true;
+            }
         }
+        total = num;
     }
     return total;
 }
 
+
+
 //Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
-double term(Parser *p)
+Number term(Parser *p)
 {
-    double total = unary(p);
+    Number total = power(p);
     while(match(p, OP_MUL) || match(p, OP_DIV))
     {
         Operator op = p->tokens[p->pos -1].op;
-        double right = unary(p);
+        Number right = power(p);
 
+
+        Number num;
+        num.position = minPosition(total, right);
         if(op == OP_MUL)
         {
-            total *= right;
+            if(total.isInteger == false || right.isInteger == false){
+                
+                num.floatValue = convertToDouble(total) * convertToDouble(right);
+                num.intValue = 0;
+                num.isInteger = false;
+            }
+            else{
+                num.intValue = total.intValue * right.intValue;
+                num.floatValue = 0;
+                num.isInteger = true;
+            }
         }
         else
         {
-            total /= right;
+            if(total.isInteger == false || right.isInteger == false){
+                num.floatValue = convertToDouble(total) / convertToDouble(right);
+                num.intValue = 0;
+                num.isInteger = false;
+            }
+            else{
+                num.intValue = total.intValue / right.intValue;
+                num.floatValue = 0;
+                num.isInteger = true;
+            }
         }
+        total = num;
     }
     return total;
 
 }
 
-//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
-double unary(Parser *p){
-    if (match(p, OP_SUB)) {
-        return -unary(p);
-    }
-    if(match(p, OP_ADD)){
-        return unary(p);
-    }
-    return power(p);
-}
 
 //Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
-double power(Parser *p){
-    double base = primary(p);
+Number power(Parser *p){
+    Number base = primary(p);
 
     if(match(p, OP_POW)) {
-        double exponent = power(p);
-        return pow(base, exponent);
+        Number exponent = power(p);
+        Number num;
+        num.position = minPosition(base, exponent);
+
+        if(base.isInteger == false || exponent.isInteger == false){
+            num.floatValue = pow(convertToDouble(base), convertToDouble(exponent));
+            num.intValue = 0;
+            num.isInteger = false;
+            return num;
+        }
+        else{
+            num.intValue = integerPower(base.intValue,exponent.intValue);
+            num.floatValue = 0;
+            num.isInteger = true;
+            return num;
+        }
     }
     return base;
 }
 
 //Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
-double primary(Parser *p){
+Number primary(Parser *p){
     Token t = p->tokens[p->pos];
     
     if(t.type == TOK_NUM) {
         p->pos++;
-        return t.value;
+        Number num;
+        num.position = t.position;
+        if(t.isInteger){
+            printf("ValueInt: %ld\n",t.intValue);
+            num.intValue = t.intValue;
+            num.floatValue = 0;
+            num.isInteger = true;
+            return num;
+        }
+        else{
+            printf("ValueFloat: %f\n",t.floatValue);
+            num.floatValue = t.floatValue;
+            num.intValue = 0;
+            num.isInteger = false;
+            return num;
+        }
     }
 
     if (match(p, OP_L)) {
-        double value = expr(p);
+        Number value = expr(p);
+        if (!match(p, OP_R)) {
+            printf("Error: expected ')'\n");
+            exit(1);
+        }
         return value;
     }
     exit(1);
 }
 
 //Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
-double parse(Parser *p){
-    double result = expr(p);
+Number parse(Parser *p){
+    Number result = expr(p);
 
     return result;
 }
@@ -179,7 +281,7 @@ void print_tokens(const Token *tokens){
     for(size_t i = 0; tokens[i].type != TOK_END; i++)
     {
         switch (tokens[i].type) {
-            case TOK_NUM: printf("NUM(%g) ", tokens[i].value); break;
+            case TOK_NUM: printf("NUM(%g is float:%d)", (tokens[i].intValue + tokens[i].floatValue),tokens[i].isInteger); break;
             case TOK_OP: printf("OP(%c) ", (char)tokens[i].op); break;
             case TOK_END: break;
         }
@@ -212,7 +314,7 @@ Token *tokenize(char *text) {
             currentChar == '*') {
 
             tokens[count].type = TOK_OP;
-
+            tokens[count].position = count + 1;
             if (currentChar == '*' && text[i + 1] == '*') {
                 tokens[count].op = OP_POW;
                 i += 2;
@@ -226,24 +328,48 @@ Token *tokenize(char *text) {
 
         else if (isdigit((unsigned char)currentChar)) {
 
-            char *end;
-            double value = strtod(&text[i], &end);
+            char *endFloat;
+            double valueFloat = strtod(&text[i], &endFloat);
+            char *endInt;
+            long valueInt = strtol(&text[i], &endInt,10); 
 
-            if (end == &text[i]) {
+            
+            
+
+            if (endFloat == &text[i]) {
                 printf("Couldnt read number :(");
                 free(tokens);
                 exit(1);
             }
 
             tokens[count].type = TOK_NUM;
-            tokens[count].value = value;
+            tokens[count].position = count + 1;
+            
+
+            if(endFloat == endInt){
+                printf("ValueInt: %ld\n",valueInt);
+                tokens[count].intValue = valueInt;
+                tokens[count].floatValue = 0;
+                tokens[count].isInteger = true;
+                i = (int)(endInt - text);
+
+            }
+            else{
+                printf("ValueFloat: %f\n",valueFloat);
+                tokens[count].floatValue = valueFloat;
+                tokens[count].intValue = 0;
+                tokens[count].isInteger = false;
+                i = (int)(endFloat - text);
+            }
             count++;
 
-            i = (int)(end - text);
+
+
+            
         }
         else
         {
-            printf("Invalid token");
+            printf("Invalid token position: %d", (int)(count +1));
             free(tokens);
             exit(1);
         }
@@ -257,6 +383,7 @@ Token *tokenize(char *text) {
 
 
 int main(void) {
+
     char * text = read_file("/home/tjark/Graded-Lab-1/testfile.txt");
     printf("%s\n", text);
     Token * tokens = tokenize(text);
@@ -264,8 +391,13 @@ int main(void) {
     Parser parser;
     parser.tokens = tokens;
     parser.pos = 0;
-    double result = parse(&parser);
-    printf("Result: %f\n", result);
-    
+    Number result = parse(&parser);
+    if(result.isInteger){
+        printf("Result: %ld\n", result.intValue);
+    }
+    else{
+        printf("Result: %f\n", result.floatValue);
+    }
+    printf("IntegerPower test: %ld\n", integerPower(2,3));
     
 }
