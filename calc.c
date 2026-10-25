@@ -11,6 +11,16 @@
 //ToDo: Remove booleans because apparently we are not allowed to use them?????
 #define USAGE "Usage: %s [-d DIR | --dir DIR] [-o OUTDIR | --output-dir OUTDIR] [input.txt]\n"
 
+/* ---- Student data: change these ----------------------------------------- */
+#define STUDENT_NAME     "hans"
+#define STUDENT_LASTNAME "peter"
+#define STUDENT_ID       "2557"
+
+#define DIR_SUFFIX  "_" STUDENT_NAME "_" STUDENT_ID
+#define FILE_SUFFIX "_" STUDENT_NAME "_" STUDENT_LASTNAME "_" STUDENT_ID ".txt"
+
+
+
 typedef struct {
     const char *dir;     /* -d / --dir         */
     const char *file;    /* positional input   */
@@ -455,6 +465,14 @@ static int has_txt_extension(const char *name)
            tolower((unsigned char)ext[3]) == 't';
 }
 
+static int ends_with_txt(const char *s, size_t n)
+{
+    return n > 4 && s[n - 4] == '.' &&
+           tolower((unsigned char)s[n - 3]) == 't' &&
+           tolower((unsigned char)s[n - 2]) == 'x' &&
+           tolower((unsigned char)s[n - 1]) == 't';
+}
+
 /*
  * Lists all regular files ending in ".txt" in the directory at `path`.
  *
@@ -678,9 +696,45 @@ char *outputFileName(const char *filename)
 {
     return concat(filename, base_len(filename), "_hans_peter_2557.txt");
 }
+
+/* Last component of path ("labs/task1.txt" -> "task1.txt", "labs/" -> "labs").
+   If strip_txt is set, a trailing ".txt" is excluded. Not NUL-terminated:
+   the length is stored in *len. */
+static const char *input_base(const char *path, int strip_txt, int *len)
+{
+    size_t end = strlen(path), start;
+
+    while (end > 1 && path[end - 1] == '/') end--;
+    for (start = end; start > 0 && path[start - 1] != '/'; start--);
+    if (strip_txt && ends_with_txt(path + start, end - start)) end -= 4;
+    *len = (int)(end - start);
+    return path + start;
+}
+
+/* Returns a new string "dir/" + first len chars of name + suffix.
+   No "/" is added if dir is "" or already ends in '/'. Caller frees. */
+static char *build(const char *dir, const char *name, int len, const char *suffix)
+{
+    size_t dlen = strlen(dir);
+    const char *sep = (dlen == 0 || dir[dlen - 1] == '/') ? "" : "/";
+    char *r = malloc(dlen + 1 + (size_t)len + strlen(suffix) + 1);
+
+    if (r != NULL) sprintf(r, "%s%s%.*s%s", dir, sep, len, name, suffix);
+    return r;
+}
+
+/* ---- Directory handling -------------------------------------------------- */
+
+static int cmp_str(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+
+
 //End Written by claude
 
-void calculate(char * text){
+Number calculate(char * text){
     printf("%s\n", text);
     Token * tokens = tokenize(text);
     print_tokens(tokens);
@@ -694,7 +748,32 @@ void calculate(char * text){
     else{
         printf("Result: %f\n", result.floatValue);
     }
-    printf("IntegerPower test: %ld\n", integerPower(2,3));
+    return result;
+}
+
+
+void writeResultToFile(const char *path, Number result){
+    FILE *fp = fopen(path, "w");
+    if(fp == NULL){
+        printf("Error opening file %s\n", path);
+    }
+    if(result.isInteger)
+    {
+        fprintf(fp, "%ld\n",result.intValue);
+    }
+    else
+    {
+        fprintf(fp, "%f\n", result.floatValue);
+    }
+}
+
+void process_file(const char *in_path, const char *outdir){
+    int len;
+    const char *base = input_base(in_path, 1, &len);
+    char *out_path = build(outdir, base, len, FILE_SUFFIX);
+    char * text = read_file(in_path);
+    Number result = calculate(text);
+    writeResultToFile(out_path, result);
 }
 
 
@@ -702,8 +781,9 @@ int main(int argc, char *argv[])
 {
     Options o;
     struct stat st;
-    const char *in, *kind, *outdir;
-    char *default_dir = NULL;   /* only set if we allocated it */
+    const char *in, *outdir, *base;
+    char *default_dir = NULL;
+    int len; 
     int status = EXIT_FAILURE;
 
     if (parse_args(argc, argv, &o)) {
@@ -711,18 +791,18 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    in   = o.dir ? o.dir : o.file;
-    kind = o.dir ? "directory" : "file";
+    in = o.dir ? o.dir : o.file;
     if (stat(in, &st) || (o.dir ? !S_ISDIR(st.st_mode) : !S_ISREG(st.st_mode))) {
-        fprintf(stderr, "Error: '%s' is not a valid %s\n", in, kind);
+        fprintf(stderr, "Error: '%s' is not a valid %s\n", in, o.dir ? "directory" : "file");
         return EXIT_FAILURE;
     }
 
+    /* Default output folder in the current folder: <input_base>_name_id */
     if (o.outdir) {
         outdir = o.outdir;
     } else {
-        default_dir = defaultOutputDir(in);
-        if (default_dir == NULL) {
+        base = input_base(in, o.file != NULL, &len);
+        if ((default_dir = build("", base, len, DIR_SUFFIX)) == NULL) {
             fprintf(stderr, "Error: out of memory\n");
             return EXIT_FAILURE;
         }
@@ -733,30 +813,28 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Error: cannot create '%s': %s\n", outdir, strerror(errno));
         goto done;
     }
-    printf("Input %s: %s\nOutput directory: %s\n", kind, in, outdir);
 
-    if (o.dir) {
-        size_t count, i;
-        char **files = list_txt_files(in, &count);
+    if (o.file) {
+        process_file(in, outdir);
+    } else {
+        size_t n, i;
+        int failed = 0;
+        char **files = list_txt_files(in, &n);
 
         if (files == NULL) {
             fprintf(stderr, "Error reading '%s': %s\n", in, strerror(errno));
             goto done;
         }
-        printf("Found %lu .txt file(s) in '%s':\n", (unsigned long)count, in);
-        for (i = 0; i < count; i++) {
-            printf("  %s\n", files[i]);
+        if (n == 0) printf("No .txt files found in '%s'\n", in);
+        for (i = 0; i < n; i++) {
+            process_file(files[i], outdir);  /* keep going on errors */
+            free(files[i]);
         }
-        free_txt_files(files);
+        free(files);
+        status = failed ? EXIT_FAILURE : EXIT_SUCCESS;
     }
-    else{
-        char * text = read_file(in);
-        calculate(text);
-    }
-
-    status = EXIT_SUCCESS;
 
 done:
-    free(default_dir);   /* free(NULL) is a no-op */
+    free(default_dir);
     return status;
 }
