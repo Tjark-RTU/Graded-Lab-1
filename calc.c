@@ -2,13 +2,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <stdbool.h>
 #include <math.h>
 #include <dirent.h>
 #include <errno.h>
 #include <sys/stat.h>
 
-//ToDo: Remove booleans because apparently we are not allowed to use them?????
 #define USAGE "Usage: %s [-d DIR | --dir DIR] [-o OUTDIR | --output-dir OUTDIR] [input.txt]\n"
 
 /* ---- Student data: change these ----------------------------------------- */
@@ -30,7 +28,8 @@ typedef struct {
 typedef enum{
     TOK_NUM,
     TOK_OP,
-    TOK_END
+    TOK_INVALID,   /* a character that cannot start any token */
+    TOK_END        /* end of line; positioned at the line's '\n' */
 } TokenType;
 
 typedef enum{
@@ -38,7 +37,7 @@ typedef enum{
     OP_SUB = '-',
     OP_MUL = '*',
     OP_DIV = '/',
-    OP_POW = '^',
+    OP_POW = '^',  /* written as ** in the input */
     OP_L = '(',
     OP_R = ')'
 } Operator;
@@ -46,22 +45,23 @@ typedef enum{
 typedef struct{
     TokenType type;
     double floatValue;
-    long intValue;
-    bool isInteger;
+    long long intValue;
+    int isInteger;
     Operator op;
-    int position; 
+    long long position;   /* 1-based character position in the whole file */
 } Token;
 
 typedef struct {
     Token *tokens;
     size_t pos;
+    long long error;      /* 0 = no error, otherwise position of the first error */
 } Parser;
 
 typedef struct {
-    int position;
+    long long position;   /* where this operand starts in the file */
     double floatValue;
-    long intValue;
-    bool isInteger;
+    long long intValue;
+    int isInteger;
 } Number;
 
 Number expr(Parser *p);
@@ -71,399 +71,227 @@ Number primary(Parser *p);
 
 
 double convertToDouble(Number num){
-    if(num.isInteger){
-        return (float)num.intValue;
-    }
-    return num.floatValue;
+    return num.isInteger ? (double)num.intValue : num.floatValue;
 }
 
-int minPosition(Number num1, Number num2){
-    if(num1.position < num2.position){
-        return num1.position;
-    }
-    return num2.position;
-}
-
-long integerPower(long num1, long num2){
-    long result = num1;
-    for(int i = 1; i < num2; i++){
-        result = result * num1;
+/* base ** exp for exp >= 0 (exponentiation by squaring). */
+long long integerPower(long long base, long long exp){
+    long long result = 1;
+    while (exp > 0) {
+        if (exp & 1) result *= base;
+        exp >>= 1;
+        if (exp > 0) base *= base;
     }
     return result;
 }
 
+/* Remembers only the first error; later ones are ignored. */
+static void set_error(Parser *p, long long position){
+    if (p->error == 0) p->error = position;
+}
 
-//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
-bool match(Parser *p, Operator op)
+//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
+int match(Parser *p, Operator op)
 {
     Token t = p->tokens[p->pos];
 
     if(t.type == TOK_OP && t.op == op) {
         p->pos++;
-        return true;
+        return 1;
     }
-    return false;
+    return 0;
 }
 
-//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+/* Computes a <op> b. opPos is the operator's position (for inf/nan errors).
+   On error, sets p->error and returns a dummy value. */
+static Number apply(Parser *p, Operator op, long long opPos, Number a, Number b){
+    Number r;
+    r.position = a.position;
+    r.intValue = 0;
+    r.floatValue = 0;
+    r.isInteger = a.isInteger && b.isInteger;
+
+    if (op == OP_DIV && (b.isInteger ? b.intValue == 0 : b.floatValue == 0.0)) {
+        set_error(p, b.position);              /* division by zero */
+        return r;
+    }
+    if (op == OP_POW && r.isInteger && b.intValue < 0) {
+        set_error(p, b.position);              /* negative integer exponent */
+        return r;
+    }
+
+    if (r.isInteger) {
+        switch (op) {
+            case OP_ADD: r.intValue = a.intValue + b.intValue; break;
+            case OP_SUB: r.intValue = a.intValue - b.intValue; break;
+            case OP_MUL: r.intValue = a.intValue * b.intValue; break;
+            case OP_DIV: r.intValue = a.intValue / b.intValue; break;
+            default:     r.intValue = integerPower(a.intValue, b.intValue); break;
+        }
+    } else {
+        double x = convertToDouble(a), y = convertToDouble(b);
+        switch (op) {
+            case OP_ADD: r.floatValue = x + y; break;
+            case OP_SUB: r.floatValue = x - y; break;
+            case OP_MUL: r.floatValue = x * y; break;
+            case OP_DIV: r.floatValue = x / y; break;
+            default:     r.floatValue = pow(x, y); break;
+        }
+        if (!isfinite(r.floatValue)) {
+            set_error(p, opPos);               /* inf or nan */
+        }
+    }
+    return r;
+}
+
+//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
 Number expr(Parser *p)
 {
     Number total = term(p);
-    while(match(p, OP_ADD) || match(p, OP_SUB))
+    while(!p->error && (match(p, OP_ADD) || match(p, OP_SUB)))
     {
-        Operator op = p->tokens[p->pos -1].op;
+        Token op = p->tokens[p->pos - 1];
         Number right = term(p);
-
-        Number num;
-        num.position = minPosition(total, right);
-        if(op == OP_ADD)
-        {
-            if(total.isInteger == false || right.isInteger == false){
-                num.floatValue = convertToDouble(total) + convertToDouble(right);
-                num.intValue = 0;
-                num.isInteger = false;
-            }
-            else{
-                num.intValue = total.intValue + right.intValue;
-                num.floatValue = 0;
-                num.isInteger = true;
-            }
-        }
-        else
-        {
-            if(total.isInteger == false || right.isInteger == false){
-                num.floatValue = convertToDouble(total) - convertToDouble(right);
-                num.intValue = 0;
-                num.isInteger = false;
-            }
-            else{
-                num.intValue = total.intValue - right.intValue;
-                num.floatValue = 0;
-                num.isInteger = true;
-            }
-        }
-        total = num;
+        if (p->error) break;
+        total = apply(p, op.op, op.position, total, right);
     }
     return total;
 }
 
-
-
-//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
 Number term(Parser *p)
 {
     Number total = power(p);
-    while(match(p, OP_MUL) || match(p, OP_DIV))
+    while(!p->error && (match(p, OP_MUL) || match(p, OP_DIV)))
     {
-        Operator op = p->tokens[p->pos -1].op;
+        Token op = p->tokens[p->pos - 1];
         Number right = power(p);
-
-
-        Number num;
-        num.position = minPosition(total, right);
-        if(op == OP_MUL)
-        {
-            if(total.isInteger == false || right.isInteger == false){
-                
-                num.floatValue = convertToDouble(total) * convertToDouble(right);
-                num.intValue = 0;
-                num.isInteger = false;
-            }
-            else{
-                num.intValue = total.intValue * right.intValue;
-                num.floatValue = 0;
-                num.isInteger = true;
-            }
-        }
-        else
-        {
-            if(total.isInteger == false || right.isInteger == false){
-                num.floatValue = convertToDouble(total) / convertToDouble(right);
-                num.intValue = 0;
-                num.isInteger = false;
-            }
-            else{
-                num.intValue = total.intValue / right.intValue;
-                num.floatValue = 0;
-                num.isInteger = true;
-            }
-        }
-        total = num;
+        if (p->error) break;
+        total = apply(p, op.op, op.position, total, right);
     }
     return total;
-
 }
 
-
-//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
 Number power(Parser *p){
     Number base = primary(p);
 
-    if(match(p, OP_POW)) {
-        Number exponent = power(p);
-        Number num;
-        num.position = minPosition(base, exponent);
-
-        if(base.isInteger == false || exponent.isInteger == false){
-            num.floatValue = pow(convertToDouble(base), convertToDouble(exponent));
-            num.intValue = 0;
-            num.isInteger = false;
-            return num;
-        }
-        else{
-            num.intValue = integerPower(base.intValue,exponent.intValue);
-            num.floatValue = 0;
-            num.isInteger = true;
-            return num;
+    if(!p->error && match(p, OP_POW)) {
+        Token op = p->tokens[p->pos - 1];
+        Number exponent = power(p);   /* right-associative */
+        if (!p->error) {
+            base = apply(p, OP_POW, op.position, base, exponent);
         }
     }
     return base;
 }
 
-//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
 Number primary(Parser *p){
     Token t = p->tokens[p->pos];
-    
+    Number num;
+
+    num.position = t.position;
+    num.intValue = 0;
+    num.floatValue = 0;
+    num.isInteger = 1;
+
     if(t.type == TOK_NUM) {
         p->pos++;
-        Number num;
-        num.position = t.position;
-        if(t.isInteger){
-            printf("ValueInt: %ld\n",t.intValue);
-            num.intValue = t.intValue;
-            num.floatValue = 0;
-            num.isInteger = true;
-            return num;
-        }
-        else{
-            printf("ValueFloat: %f\n",t.floatValue);
-            num.floatValue = t.floatValue;
-            num.intValue = 0;
-            num.isInteger = false;
-            return num;
-        }
+        num.isInteger = t.isInteger;
+        num.intValue = t.intValue;
+        num.floatValue = t.floatValue;
+        return num;
     }
 
     if (match(p, OP_L)) {
-        Number value = expr(p);
+        num = expr(p);
+        if (p->error) return num;
         if (!match(p, OP_R)) {
-            printf("Error: expected ')'\n");
-            exit(1);
+            /* missing ')': report whatever stands there, e.g. the '\n' */
+            set_error(p, p->tokens[p->pos].position);
+            return num;
         }
-        return value;
+        num.position = t.position;   /* the operand starts at its '(' */
+        return num;
     }
-    exit(1);
-}
 
-//Adopted from: https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
-Number parse(Parser *p){
-    Number result = expr(p);
-
-    return result;
-}
-
-
-//Read file function on the basis of: https://www.fundza.com/c4serious/fileIO_reading_all/index.html
-char * read_file(const char*path){
-     	
-    FILE    *infile;
-    char    *buffer;
-    long    numbytes;
-    
-    infile = fopen(path, "r");
-    
-
-    if(infile == NULL)
-    {
-        exit(1);
-    }
-    
-
-    fseek(infile, 0L, SEEK_END);
-    numbytes = ftell(infile);
-    
-    fseek(infile, 0L, SEEK_SET);	
-    
-    buffer = (char*)calloc(numbytes + 1, sizeof(char));	
-    
-    if(buffer == NULL)
-    {
-        fclose(infile);
-        exit(1);
-    }
-    
-    int n = fread(buffer, sizeof(char), numbytes, infile);
-    buffer[n] = '\0';
-    fclose(infile);
-    return buffer;
+    /* Expected a number or '(' but found an operator, an invalid
+       character, or the end of the line. */
+    set_error(p, t.position);
+    return num;
 }
 
 
-void print_tokens(const Token *tokens){
-    for(size_t i = 0; tokens[i].type != TOK_END; i++)
-    {
-        switch (tokens[i].type) {
-            case TOK_NUM: printf("NUM(%g is float:%d)", (tokens[i].intValue + tokens[i].floatValue),tokens[i].isInteger); break;
-            case TOK_OP: printf("OP(%c) ", (char)tokens[i].op); break;
-            case TOK_END: break;
-        }
-    }
-    printf("END\n");
-}
+/* Splits one line (len characters) into tokens. offset is the number of
+   characters in the file before this line, so a character at index i has
+   position offset + i + 1.
+   At the first invalid character a TOK_INVALID token is added and
+   tokenizing stops; the parser reports it only if it gets that far, so an
+   earlier parse error takes precedence. The final TOK_END sits at the
+   line's '\n' (or file length + 1 on a last line without '\n').
+   Returns NULL if out of memory. Caller frees. */
+Token *tokenize(const char *text, size_t len, long long offset) {
+    Token *tokens = malloc((len + 2) * sizeof *tokens);
+    size_t count = 0, i = 0;
 
+    if (tokens == NULL) return NULL;
 
-Token *tokenize(char *text) {
-    int i = 0;
+    while (i < len) {
+        char c = text[i];
+        Token *t = &tokens[count];
 
-    Token *tokens = malloc((strlen(text) + 1) * sizeof(Token));
-    if (tokens == NULL) {
-        perror("malloc");
-        exit(1);
-    }
-
-    size_t count = 0;
-
-    while (text[i] != '\0') {
-        char currentChar = text[i];
-
-        
-        if (isspace((unsigned char)currentChar)) {
+        if (isspace((unsigned char)c)) {
             i++;
             continue;
         }
+        t->position = offset + (long long)i + 1;
 
-        if (strchr("+-*/()", currentChar) != NULL ||
-            currentChar == '*') {
-
-            tokens[count].type = TOK_OP;
-            tokens[count].position = count + 1;
-            if (currentChar == '*' && text[i + 1] == '*') {
-                tokens[count].op = OP_POW;
+        if (c != '\0' && strchr("+-*/()", c) != NULL) {
+            t->type = TOK_OP;
+            if (c == '*' && i + 1 < len && text[i + 1] == '*') {
+                t->op = OP_POW;
                 i += 2;
             } else {
-                tokens[count].op = (Operator)currentChar;
+                t->op = (Operator)c;
                 i++;
             }
+        }
+        else if (isdigit((unsigned char)c)) {
+            /* digits [ . digits ] [ e [+-] digits ] */
+            size_t j = i;
+            int isFloat = 0;
 
+            while (j < len && isdigit((unsigned char)text[j])) j++;
+            if (j < len && text[j] == '.' && isdigit((unsigned char)text[j +1])) {
+                isFloat = 1;
+                j++;
+                while (j < len && isdigit((unsigned char)text[j])) j++;
+            }
+
+            t->type = TOK_NUM;
+            t->isInteger = !isFloat;
+            t->intValue = isFloat ? 0 : strtol(&text[i], NULL, 10);
+            t->floatValue = isFloat ? strtod(&text[i], NULL) : 0;
+            i = j;
+        }
+        else {
+            t->type = TOK_INVALID; 
             count++;
+            break;
         }
-
-        else if (isdigit((unsigned char)currentChar)) {
-
-            char *endFloat;
-            double valueFloat = strtod(&text[i], &endFloat);
-            char *endInt;
-            long valueInt = strtol(&text[i], &endInt,10); 
-
-            
-            
-
-            if (endFloat == &text[i]) {
-                printf("Couldnt read number :(");
-                free(tokens);
-                exit(1);
-            }
-
-            tokens[count].type = TOK_NUM;
-            tokens[count].position = count + 1;
-            
-
-            if(endFloat == endInt){
-                printf("ValueInt: %ld\n",valueInt);
-                tokens[count].intValue = valueInt;
-                tokens[count].floatValue = 0;
-                tokens[count].isInteger = true;
-                i = (int)(endInt - text);
-
-            }
-            else{
-                printf("ValueFloat: %f\n",valueFloat);
-                tokens[count].floatValue = valueFloat;
-                tokens[count].intValue = 0;
-                tokens[count].isInteger = false;
-                i = (int)(endFloat - text);
-            }
-            count++;
-
-
-
-            
-        }
-        else
-        {
-            printf("Invalid token position: %d", (int)(count +1));
-            free(tokens);
-            exit(1);
-        }
+        count++;
     }
 
     tokens[count].type = TOK_END;
+    tokens[count].position = offset + (long long)len + 1;
     return tokens;
-    free(tokens);
 }
 
-char * outputFolderPath(int argc, char *argv[]){
-    for(int i = 0; i < argc; i++)
-    {
-        if(strcmp(argv[i],"-o") == 0)
-        {
-            return argv[i +1];
-        }
-    }
-    return NULL;
-}
-
-char * inputFolderPath(int argc, char *argv[]){
-    for(int i = 0; i < argc; i++)
-    {
-        if(strcmp(argv[i],"-d") == 0)
-        {
-            return argv[i +1];
-        }
-    }
-    return NULL;
-}
-
-char * inputFilePath(int argc, char *argv[]){
-    for(int i = 0; i< argc; i++)
-    {
-        if(strcmp(argv[i], "-o") && i + 3 <= argc){
-            printf("%s\n", argv[i + 3]);
-            return argv[i + 2];
-        }
-    }
-    return NULL;
-}
 
 
 //ToDo add AI Documentation
 //Start written with claude
-/* Portable strdup replacement (strdup is POSIX, not standard C). */
-static char *dup_string(const char *s)
-{
-    size_t len = strlen(s) + 1;
-    char *copy = malloc(len);
-    if (copy != NULL) {
-        memcpy(copy, s, len);
-    }
-    return copy;
-}
-
-/* Returns 1 if name ends in ".txt" (case-insensitive) and has a base name. */
-static int has_txt_extension(const char *name)
-{
-    size_t len = strlen(name);
-    const char *ext;
-
-    if (len <= 4) {
-        return 0;
-    }
-    ext = name + len - 4;
-    return ext[0] == '.' &&
-           tolower((unsigned char)ext[1]) == 't' &&
-           tolower((unsigned char)ext[2]) == 'x' &&
-           tolower((unsigned char)ext[3]) == 't';
-}
 
 static int ends_with_txt(const char *s, size_t n)
 {
@@ -471,6 +299,36 @@ static int ends_with_txt(const char *s, size_t n)
            tolower((unsigned char)s[n - 3]) == 't' &&
            tolower((unsigned char)s[n - 2]) == 'x' &&
            tolower((unsigned char)s[n - 1]) == 't';
+}
+
+/* Returns a new string "dir/" + first len chars of name + suffix.
+   No "/" is added if dir is "" or already ends in '/'. Caller frees. */
+static char *build(const char *dir, const char *name, int len, const char *suffix)
+{
+    size_t dlen = strlen(dir);
+    const char *sep = (dlen == 0 || dir[dlen - 1] == '/') ? "" : "/";
+    char *r = malloc(dlen + 1 + (size_t)len + strlen(suffix) + 1);
+
+    if (r != NULL) sprintf(r, "%s%s%.*s%s", dir, sep, len, name, suffix);
+    return r;
+}
+
+static int cmp_str(const void *a, const void *b)
+{
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+void free_txt_files(char **list)
+{
+    size_t i;
+
+    if (list == NULL) {
+        return;
+    }
+    for (i = 0; list[i] != NULL; i++) {
+        free(list[i]);
+    }
+    free(list);
 }
 
 /*
@@ -481,111 +339,56 @@ static int ends_with_txt(const char *s, size_t n)
  * free_txt_files(). On error, returns NULL and sets errno.
  * An empty directory returns a valid array containing only NULL.
  */
-char **list_txt_files(const char *path, size_t *out_count)
+char **list_txt_files(const char *dir, size_t *count)
 {
-    DIR *dir;
-    struct dirent *entry;
-    char **list;
-    size_t count = 0;
-    size_t capacity = 16;
-    size_t path_len;
-    int needs_sep;
-    int saved_errno;
+    size_t n = 0, cap = 16;
+    char **list, **grown, *path;
+    struct dirent *e;
+    struct stat st;
+    DIR *d;
+    int err;
 
-    if (path == NULL || out_count == NULL) {
-        errno = EINVAL;
+    if ((list = malloc(cap * sizeof *list)) == NULL) return NULL;
+    if ((d = opendir(dir)) == NULL) {
+        free(list);
         return NULL;
     }
-    *out_count = 0;
+    list[0] = NULL;   /* kept NULL-terminated so free_txt_files() works anytime */
 
-    dir = opendir(path);
-    if (dir == NULL) {
-        return NULL; /* errno set by opendir */
-    }
+    while ((errno = 0, e = readdir(d)) != NULL) {
+        size_t len = strlen(e->d_name);
 
-    list = malloc(capacity * sizeof *list);
-    if (list == NULL) {
-        closedir(dir);
-        errno = ENOMEM;
-        return NULL;
-    }
-
-    path_len = strlen(path);
-    needs_sep = (path_len > 0 && path[path_len - 1] != '/');
-
-    for (;;) {
-        const char *name;
-        char *full_path;
-        size_t full_len;
-        struct stat st;
-
-        errno = 0;
-        entry = readdir(dir);
-        if (entry == NULL) {
-            if (errno != 0) {
-                goto fail; /* real read error, not end of directory */
-            }
-            break;
-        }
-
-        name = entry->d_name;
-        if (!has_txt_extension(name)) {
+        if (!ends_with_txt(e->d_name, len)) continue;
+        if ((path = build(dir, e->d_name, (int)len, "")) == NULL) goto fail;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+            free(path);   /* e.g. a folder named x.txt */
             continue;
         }
-
-        /* Build "path/name" so stat() can confirm it's a regular file. */
-        full_len = path_len + (size_t)needs_sep + strlen(name) + 1;
-        full_path = malloc(full_len);
-        if (full_path == NULL) {
-            errno = ENOMEM;
-            goto fail;
-        }
-        memcpy(full_path, path, path_len);
-        if (needs_sep) {
-            full_path[path_len] = '/';
-        }
-        strcpy(full_path + path_len + needs_sep, name);
-
-        if (stat(full_path, &st) != 0 || !S_ISREG(st.st_mode)) {
-            free(full_path);
-            continue; /* skip directories named *.txt, broken links, etc. */
-        }
-        free(full_path);
-
-        /* Grow the array, always leaving room for the NULL terminator. */
-        if (count + 1 >= capacity) {
-            char **grown = realloc(list, capacity * 2 * sizeof *list);
-            if (grown == NULL) {
-                errno = ENOMEM;
+        if (n + 1 == cap) {
+            if ((grown = realloc(list, (cap *= 2) * sizeof *list)) == NULL) {
+                free(path);
                 goto fail;
             }
             list = grown;
-            capacity *= 2;
         }
-
-        list[count] = dup_string(name);
-        if (list[count] == NULL) {
-            errno = ENOMEM;
-            goto fail;
-        }
-        count++;
+        list[n++] = path;
+        list[n] = NULL;
     }
+    if (errno != 0) goto fail;   /* readdir failed, not just end of folder */
 
-    list[count] = NULL;
-    closedir(dir);
-    *out_count = count;
+    closedir(d);
+    qsort(list, n, sizeof *list, cmp_str);
+    *count = n;
     return list;
 
 fail:
-    saved_errno = errno;
-    while (count > 0) {
-        free(list[--count]);
-    }
-    free(list);
-    closedir(dir);
-    errno = saved_errno;
+    err = errno ? errno : ENOMEM;
+    closedir(d);
+    free_txt_files(list);
+    errno = err;
     return NULL;
 }
+
 
 /* True if arg is the short form, the long form, or "long=VALUE". */
 static int is_opt(const char *arg, const char *s, const char *l)
@@ -647,19 +450,6 @@ int create_directory(const char *path)
     return 0;
 }
 
-void free_txt_files(char **list)
-{
-    size_t i;
-
-    if (list == NULL) {
-        return;
-    }
-    for (i = 0; list[i] != NULL; i++) {
-        free(list[i]);
-    }
-    free(list);
-}
-
 //End written with claude
 
 
@@ -667,7 +457,7 @@ void free_txt_files(char **list)
 static size_t base_len(const char *name)
 {
     size_t n = strlen(name);
-    return has_txt_extension(name) ? n - 4 : n;
+    return ends_with_txt(name, strlen(name)) ? n - 4 : n;
 }
 
 /* Returns a new string: the first len chars of a, followed by b.
@@ -711,69 +501,148 @@ static const char *input_base(const char *path, int strip_txt, int *len)
     return path + start;
 }
 
-/* Returns a new string "dir/" + first len chars of name + suffix.
-   No "/" is added if dir is "" or already ends in '/'. Caller frees. */
-static char *build(const char *dir, const char *name, int len, const char *suffix)
-{
-    size_t dlen = strlen(dir);
-    const char *sep = (dlen == 0 || dir[dlen - 1] == '/') ? "" : "/";
-    char *r = malloc(dlen + 1 + (size_t)len + strlen(suffix) + 1);
-
-    if (r != NULL) sprintf(r, "%s%s%.*s%s", dir, sep, len, name, suffix);
-    return r;
-}
-
-/* ---- Directory handling -------------------------------------------------- */
-
-static int cmp_str(const void *a, const void *b)
-{
-    return strcmp(*(char *const *)a, *(char *const *)b);
-}
 
 
 
 //End Written by claude
 
-Number calculate(char * text){
-    printf("%s\n", text);
-    Token * tokens = tokenize(text);
-    print_tokens(tokens);
+/* Evaluates one line. offset = characters in the file before this line.
+   Returns 0 and stores the value in *result, a positive error position,
+   or -1 if out of memory. */
+static long long evaluate_line(const char *line, size_t len, long long offset, Number *result){
+    Token *tokens = tokenize(line, len, offset);
     Parser parser;
+
+    if (tokens == NULL) return -1;
     parser.tokens = tokens;
     parser.pos = 0;
-    Number result = parse(&parser);
-    if(result.isInteger){
-        printf("Result: %ld\n", result.intValue);
+    parser.error = 0;
+
+    *result = expr(&parser);
+
+    /* Parsed a full expression but the line continues, e.g. an extra ')' */
+    if (parser.error == 0 && tokens[parser.pos].type != TOK_END) {
+        parser.error = tokens[parser.pos].position;
     }
-    else{
-        printf("Result: %f\n", result.floatValue);
-    }
-    return result;
+    free(tokens);
+    return parser.error;
 }
 
+/* Reads one line from fp into a new buffer *line (without the '\n'),
+   storing its length in *len. Returns 1 if a line was read, 0 at end of
+   file, -1 if out of memory. Caller frees *line. */
+static int read_line(FILE *fp, char **line, size_t *len)
+{
+    size_t n = 0, cap = 128;
+    char *buf = malloc(cap), *grown;
+    int c;
 
-void writeResultToFile(const char *path, Number result){
-    FILE *fp = fopen(path, "w");
-    if(fp == NULL){
-        printf("Error opening file %s\n", path);
+    if (buf == NULL) return -1;
+    while ((c = fgetc(fp)) != EOF && c != '\n') {
+        if (n + 1 >= cap) {
+            if ((grown = realloc(buf, cap *= 2)) == NULL) {
+                free(buf);
+                return -1;
+            }
+            buf = grown;
+        }
+        buf[n++] = (char)c;
     }
+    if (c == EOF && n == 0) {   /* nothing left to read */
+        free(buf);
+        return 0;
+    }
+    buf[n] = '\0';
+    *line = buf;
+    *len = n;
+    return 1;
+}
+
+/* True for lines that produce no output: blank lines and comment lines
+   (first non-blank character is '#'). */
+static int skip_line(const char *line, size_t len)
+{
+    size_t i = 0;
+
+    while (i < len && isspace((unsigned char)line[i])) i++;
+    return i == len || line[i] == '#';
+}
+
+void writeResult(FILE *fp, Number result){
     if(result.isInteger)
     {
-        fprintf(fp, "%ld\n",result.intValue);
+        fprintf(fp, "%lld\n", result.intValue);
     }
     else
     {
-        fprintf(fp, "%f\n", result.floatValue);
+        fprintf(fp, "%.15g\n", result.floatValue);
     }
 }
 
-void process_file(const char *in_path, const char *outdir){
-    int len;
-    const char *base = input_base(in_path, 1, &len);
-    char *out_path = build(outdir, base, len, FILE_SUFFIX);
-    char * text = read_file(in_path);
-    Number result = calculate(text);
-    writeResultToFile(out_path, result);
+/* Evaluates in_path line by line and writes one result per expression.
+   Positions count every character of the file (including '\n' and
+   comment lines). On the first error the output is replaced by
+   "ERROR:<pos>" only. Returns 0 on success (also when the file contained
+   an error), -1 if the files couldn't be read/written. */
+int process_file(const char *in_path, const char *outdir){
+    int len_base, status;
+    const char *base = input_base(in_path, 1, &len_base);
+    char *out_path = build(outdir, base, len_base, FILE_SUFFIX);
+    char *line;
+    size_t len;
+    long long offset = 0, error = 0;
+    FILE *in, *out;
+
+    if (out_path == NULL) {
+        fprintf(stderr, "Error: out of memory\n");
+        return -1;
+    }
+    /* Binary mode so "\r\n" isn't shortened to "\n" on Windows:
+       every character in the file must be counted. */
+    if ((in = fopen(in_path, "rb")) == NULL) {
+        fprintf(stderr, "Error: cannot read '%s': %s\n", in_path, strerror(errno));
+        free(out_path);
+        return -1;
+    }
+    if ((out = fopen(out_path, "w")) == NULL) {
+        fprintf(stderr, "Error: cannot write '%s': %s\n", out_path, strerror(errno));
+        fclose(in);
+        free(out_path);
+        return -1;
+    }
+
+    while ((status = read_line(in, &line, &len)) == 1) {
+        if (!skip_line(line, len)) {
+            Number result;
+            error = evaluate_line(line, len, offset, &result);
+            if (error == 0) writeResult(out, result);
+        }
+        offset += (long long)len + 1;   /* +1 for the '\n' */
+        free(line);
+        if (error != 0) break;
+    }
+    fclose(in);
+
+    if (status < 0 || error < 0) {
+        fprintf(stderr, "Error: out of memory while reading '%s'\n", in_path);
+        fclose(out);
+        free(out_path);
+        return -1;
+    }
+
+    if (error > 0) {
+        /* Throw away any partial results: reopen (truncates the file). */
+        if ((out = freopen(out_path, "w", out)) == NULL) {
+            fprintf(stderr, "Error: cannot write '%s': %s\n", out_path, strerror(errno));
+            free(out_path);
+            return -1;
+        }
+        fprintf(out, "ERROR:%lld\n", error);
+    }
+
+    fclose(out);
+    free(out_path);
+    return 0;
 }
 
 
@@ -815,7 +684,7 @@ int main(int argc, char *argv[])
     }
 
     if (o.file) {
-        process_file(in, outdir);
+        status = process_file(in, outdir) ? EXIT_FAILURE : EXIT_SUCCESS;
     } else {
         size_t n, i;
         int failed = 0;
@@ -827,7 +696,12 @@ int main(int argc, char *argv[])
         }
         if (n == 0) printf("No .txt files found in '%s'\n", in);
         for (i = 0; i < n; i++) {
-            process_file(files[i], outdir);  /* keep going on errors */
+            /* list_txt_files returns bare names, so prepend the folder */
+            char *path = build(in, files[i], (int)strlen(files[i]), "");
+            if (path == NULL || process_file(path, outdir) != 0) {
+                failed = 1;  /* keep going on errors */
+            }
+            free(path);
             free(files[i]);
         }
         free(files);
