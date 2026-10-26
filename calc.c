@@ -1,3 +1,8 @@
+// Tjark Janke 260ADM037
+// Compile with: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
+// Resources used: claude, https://www.geeksforgeeks.org/c, https://introcs-python.cs.luc.edu/recursion/recursiondparser.html, https://coddy.tech/cheat-sheets/c, 
+// I used my companies claude enterprise instance for this project and realised that I can't share the chat with people outside my organization.
+// I have added the folder claude_screenshots were I documented the entire chat. If necessary I can also show the entire chat in person at uni.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,26 +15,46 @@
 #define USAGE "Usage: %s [-d DIR | --dir DIR] [-o OUTDIR | --output-dir OUTDIR] [input.txt]\n"
 
 /* ---- Student data: change these ----------------------------------------- */
-#define STUDENT_NAME     "hans"
-#define STUDENT_LASTNAME "peter"
-#define STUDENT_ID       "2557"
+#define STUDENT_NAME     "tjark"
+#define STUDENT_LASTNAME "janke"
+#define STUDENT_ID       "260ADM037"
 
 #define DIR_SUFFIX  "_" STUDENT_NAME "_" STUDENT_ID
 #define FILE_SUFFIX "_" STUDENT_NAME "_" STUDENT_LASTNAME "_" STUDENT_ID ".txt"
 
+/*Integer and float arithmetic
+    Decision between integer and float arithmetic is made using an if statement in the apply function.
+    If either number of the calculation is a float we convert both of them to float and return a float.
+    Otherwise we run the calculation using integers and return an integer.
+    To track if the current number is an integer we create a struct called Number that contains a double property for floats,
+    a long long property for integers and an integer that is used as a boolean to indicate whether the number is an integer or not
+    This "boolean" is what gets checked during every function call of apply. 
+
+*/
+
+/*Grammar precedence
+    The Grammar has the correct precedence because the lower functions call the higher precidency functions, these consume all matching characters before returning their value.
+    E.g 2 + 3 * 4:
+    Expr calls term. Term reads 2 and + and therefore returns 2.
+    Expr calls term for 3. Term reads 3 and *. Because * matches its operator it continues reading and consumes 4. It calculates 3*4 = 12 which it returns to Expr.
+    Expr calculates 2+12=14 and returns.
+
+    An important distinction is Power which calls itself immediately for the exponent instead of consuming from left to right. This is what makes it right-assosiative.
+*/
+
 
 
 typedef struct {
-    const char *dir;     /* -d / --dir         */
-    const char *file;    /* positional input   */
-    const char *outdir;  /* -o / --output-dir  */
+    const char *dir;
+    const char *file;
+    const char *outdir;
 } Options;
 
 typedef enum{
     TOK_NUM,
     TOK_OP,
-    TOK_INVALID,   /* a character that cannot start any token */
-    TOK_END        /* end of line; positioned at the line's '\n' */
+    TOK_INVALID,
+    TOK_END
 } TokenType;
 
 typedef enum{
@@ -37,28 +62,32 @@ typedef enum{
     OP_SUB = '-',
     OP_MUL = '*',
     OP_DIV = '/',
-    OP_POW = '^',  /* written as ** in the input */
+    OP_POW = '^', /* Is used as the power character inside the program. This does not affect tokenization/parsing*/
     OP_L = '(',
     OP_R = ')'
 } Operator;
 
+
+//Fields floatValue, intValue and isInteger only valid with TokenType TOK_NUM
+//The field op is only valid with TokenType TOK_OP
+//TOK_END and TOK_INVALID do not use other fields
 typedef struct{
     TokenType type;
     double floatValue;
     long long intValue;
     int isInteger;
     Operator op;
-    long long position;   /* 1-based character position in the whole file */
+    long long position;
 } Token;
 
 typedef struct {
     Token *tokens;
     size_t pos;
-    long long error;      /* 0 = no error, otherwise position of the first error */
+    long long error;
 } Parser;
 
 typedef struct {
-    long long position;   /* where this operand starts in the file */
+    long long position;
     double floatValue;
     long long intValue;
     int isInteger;
@@ -74,7 +103,13 @@ double convertToDouble(Number num){
     return num.isInteger ? (double)num.intValue : num.floatValue;
 }
 
-/* base ** exp for exp >= 0 (exponentiation by squaring). */
+
+/*originally implemented by me but modified by Claude during the Prompt:
+AI(Claude): "Analyse the file and implement this error handling: [5. Rules/Positions part]
+Also implement the comment functionality for the files as described here, remember to count the characters in the comment line as well 
+as its important for the errors: [5. Rules/Lines and output]"
+modification now includes the square and multiply algorithm
+Function expects an exponent >= 0 */
 long long integerPower(long long base, long long exp){
     long long result = 1;
     while (exp > 0) {
@@ -85,14 +120,23 @@ long long integerPower(long long base, long long exp){
     return result;
 }
 
-/* Remembers only the first error; later ones are ignored. */
+/* 
+Remembers only the first error; later ones are ignored. 
+Where errors are handled:
+- invalid character: is flagged in the tokenizer, it stops and the expression until the invalid character is evaluated. If the syntax error is the first error, then that is output
+- two operators in a row: is flagged by the primary function because it expects a number or ( after an operator
+- missing ) is also reported in the primary after the ( has been evaluated
+- extra ) is flagged in evaluate_line
+- value errors like division by zero, negative integer exponent and inf/NaN are handled in the apply function
+More details about the error handling can be found above each function
+*/
+
 static void set_error(Parser *p, long long position){
     if (p->error == 0) p->error = position;
 }
 
-//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
-int match(Parser *p, Operator op)
-{
+//Adopted from https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+int match(Parser *p, Operator op){
     Token t = p->tokens[p->pos];
 
     if(t.type == TOK_OP && t.op == op) {
@@ -102,8 +146,21 @@ int match(Parser *p, Operator op)
     return 0;
 }
 
-/* Computes a <op> b. opPos is the operator's position (for inf/nan errors).
-   On error, sets p->error and returns a dummy value. */
+/* 
+Handle the errors division by zero, negative integer exponent and infinite/NaN float
+These errors are handled here because the results of calculations from before need to be present
+e.g 2 / (5-5) needs to be handled but can't be during tokenizing as the tokenizer does not know that the result of 5-5 is 0
+Same goes for the negative integer exponent
+And for the inf/NaN result as we obviously have to calculate first to be able to check if the result is infinite/NaN
+
+AI(Claude): "Analyse the file and implement this error handling: [5. Rules/Positions part]
+Also implement the comment functionality for the files as described here, remember to count the characters in the comment line as well 
+as its important for the errors: [5. Rules/Lines and output]"
+
+
+The logic as existing in the function below was already completely present (apart from the error handling). Claude only moved it from the individual functions expr, term and power to one.
+I chose to keep the change, as it makes the code a lot more readable and removes duplicate handling of the integer and float cases.
+*/
 static Number apply(Parser *p, Operator op, long long opPos, Number a, Number b){
     Number r;
     r.position = a.position;
@@ -112,11 +169,11 @@ static Number apply(Parser *p, Operator op, long long opPos, Number a, Number b)
     r.isInteger = a.isInteger && b.isInteger;
 
     if (op == OP_DIV && (b.isInteger ? b.intValue == 0 : b.floatValue == 0.0)) {
-        set_error(p, b.position);              /* division by zero */
+        set_error(p, b.position);
         return r;
     }
     if (op == OP_POW && r.isInteger && b.intValue < 0) {
-        set_error(p, b.position);              /* negative integer exponent */
+        set_error(p, b.position);
         return r;
     }
 
@@ -138,15 +195,18 @@ static Number apply(Parser *p, Operator op, long long opPos, Number a, Number b)
             default:     r.floatValue = pow(x, y); break;
         }
         if (!isfinite(r.floatValue)) {
-            set_error(p, opPos);               /* inf or nan */
+            set_error(p, opPos);
         }
     }
     return r;
 }
 
-//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
-Number expr(Parser *p)
-{
+
+/*Adopted from https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+left-associative via loop
+Written by me, slightly modified by AI(claude) during the implementation of the apply function for error handling.
+*/
+Number expr(Parser *p){
     Number total = term(p);
     while(!p->error && (match(p, OP_ADD) || match(p, OP_SUB)))
     {
@@ -158,9 +218,11 @@ Number expr(Parser *p)
     return total;
 }
 
-//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
-Number term(Parser *p)
-{
+/*Adopted from https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+left-associative via loop
+Written by me, slightly modified by AI(claude) during the implementation of the apply function for error handling.
+*/
+Number term(Parser *p){
     Number total = power(p);
     while(!p->error && (match(p, OP_MUL) || match(p, OP_DIV)))
     {
@@ -172,13 +234,19 @@ Number term(Parser *p)
     return total;
 }
 
-//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
+/*Adopted from https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+right-associative via recursion
+Written by me, slightly modified by AI(claude) during the implementation of the apply function for error handling.
+Power is right associative because the exponents need to be evaluated first.
+E.g 2**3**2 -> 2**9 != 8**2
+The right-association is handled by calling power itself for the exponent.
+*/
 Number power(Parser *p){
     Number base = primary(p);
 
     if(!p->error && match(p, OP_POW)) {
         Token op = p->tokens[p->pos - 1];
-        Number exponent = power(p);   /* right-associative */
+        Number exponent = power(p);
         if (!p->error) {
             base = apply(p, OP_POW, op.position, base, exponent);
         }
@@ -186,7 +254,16 @@ Number power(Parser *p){
     return base;
 }
 
-//Adopted from: https://urldefense.com/v3/__https://introcs-python.cs.luc.edu/recursion/recursiondparser.html__;!!LtPJ!2KQuQm9YLWM1UjipXEIacF02G1l4fHKy2wVawNrRQ-_XVRu7F9CLAw5BZkrg1eP_Hwj7dILu_TVq31dZkHPyUvmSoJk$ 
+
+/*
+Adopted from https://introcs-python.cs.luc.edu/recursion/recursiondparser.html
+Handles missing right parenthesis. 
+The error is handled here because we can only check for missing right parenthesis after passing the left parenthesis and the content inside it.
+Also handles unexpected valid operators at an unexpected position. The error is handled here because it is "catch all" of the recursive functions.
+So if nothing until here could handle the operator then it must not be valid. This also includes completely invalid characters which are denoted using the TOK_INVALID which no function can handle and therefore lands here
+The reason we handle invalid tokens here and not during the tokenizer is, that in theory another error could occur first
+Written by me, slightly modified by AI(claude) during the implementation of the apply function for error handling.
+*/
 Number primary(Parser *p){
     Token t = p->tokens[p->pos];
     Number num;
@@ -208,29 +285,20 @@ Number primary(Parser *p){
         num = expr(p);
         if (p->error) return num;
         if (!match(p, OP_R)) {
-            /* missing ')': report whatever stands there, e.g. the '\n' */
             set_error(p, p->tokens[p->pos].position);
             return num;
         }
-        num.position = t.position;   /* the operand starts at its '(' */
+        num.position = t.position;
         return num;
     }
 
-    /* Expected a number or '(' but found an operator, an invalid
-       character, or the end of the line. */
     set_error(p, t.position);
     return num;
 }
 
+//Offset specifies the position of the first character in the row in relation to the whole file
+//Stops parsing after hitting an invalid token. Expression until the invalid token will be evaluated in case another error comes before it.
 
-/* Splits one line (len characters) into tokens. offset is the number of
-   characters in the file before this line, so a character at index i has
-   position offset + i + 1.
-   At the first invalid character a TOK_INVALID token is added and
-   tokenizing stops; the parser reports it only if it gets that far, so an
-   earlier parse error takes precedence. The final TOK_END sits at the
-   line's '\n' (or file length + 1 on a last line without '\n').
-   Returns NULL if out of memory. Caller frees. */
 Token *tokenize(const char *text, size_t len, long long offset) {
     Token *tokens = malloc((len + 2) * sizeof *tokens);
     size_t count = 0, i = 0;
@@ -258,12 +326,11 @@ Token *tokenize(const char *text, size_t len, long long offset) {
             }
         }
         else if (isdigit((unsigned char)c)) {
-            /* digits [ . digits ] [ e [+-] digits ] */
             size_t j = i;
             int isFloat = 0;
 
             while (j < len && isdigit((unsigned char)text[j])) j++;
-            if (j < len && text[j] == '.' && isdigit((unsigned char)text[j +1])) {
+            if (j + 1 < len && text[j] == '.' && isdigit((unsigned char)text[j +1])) {
                 isFloat = 1;
                 j++;
                 while (j < len && isdigit((unsigned char)text[j])) j++;
@@ -271,7 +338,7 @@ Token *tokenize(const char *text, size_t len, long long offset) {
 
             t->type = TOK_NUM;
             t->isInteger = !isFloat;
-            t->intValue = isFloat ? 0 : strtol(&text[i], NULL, 10);
+            t->intValue = isFloat ? 0 : strtoll(&text[i], NULL, 10);
             t->floatValue = isFloat ? strtod(&text[i], NULL) : 0;
             i = j;
         }
@@ -290,19 +357,20 @@ Token *tokenize(const char *text, size_t len, long long offset) {
 
 
 
-//ToDo add AI Documentation
-//Start written with claude
-
+/*
+AI(claude) prompt: "Add functionality to the input and output files that supports these requirements:[4. The program section from the requirements]"
+*/
 static int ends_with_txt(const char *s, size_t n)
 {
     return n > 4 && s[n - 4] == '.' &&
-           tolower((unsigned char)s[n - 3]) == 't' &&
-           tolower((unsigned char)s[n - 2]) == 'x' &&
-           tolower((unsigned char)s[n - 1]) == 't';
+           s[n - 3] == 't' &&
+           s[n - 2] == 'x' &&
+           s[n - 1] == 't';
 }
 
-/* Returns a new string "dir/" + first len chars of name + suffix.
-   No "/" is added if dir is "" or already ends in '/'. Caller frees. */
+/*
+AI(claude) prompt: "Add functionality to the input and output files that supports these requirements:[4. The program section from the requirements]"
+*/
 static char *build(const char *dir, const char *name, int len, const char *suffix)
 {
     size_t dlen = strlen(dir);
@@ -313,11 +381,18 @@ static char *build(const char *dir, const char *name, int len, const char *suffi
     return r;
 }
 
+/*
+* AI(Claude) prompt: "Please refactor the list-txt_files function and simplify it"
+*/
 static int cmp_str(const void *a, const void *b)
 {
     return strcmp(*(char *const *)a, *(char *const *)b);
 }
 
+/*
+ * AI(Claude): prompt "Write me a function in the C programming language that takes a path as input and returns all .txt filesnames.
+ * You are only allowed to use the libraries stdio.stdlib,string ctype, math,errno,dirent, sys/stat"
+*/
 void free_txt_files(char **list)
 {
     size_t i;
@@ -331,13 +406,14 @@ void free_txt_files(char **list)
     free(list);
 }
 
+
 /*
  * Lists all regular files ending in ".txt" in the directory at `path`.
  *
- * Returns a NULL-terminated array of newly allocated filename strings and
- * stores the number of names in *out_count. Free the result with
- * free_txt_files(). On error, returns NULL and sets errno.
- * An empty directory returns a valid array containing only NULL.
+ * AI(Claude): prompt "Write me a function in the C programming language that takes a path as input and returns all .txt filesnames.
+ * You are only allowed to use the libraries stdio.stdlib,string ctype, math,errno,dirent, sys/stat"
+ * 
+ * Later modified via: AI(Claude) prompt: "Please refactor the list-txt_files function and simplify it"
  */
 char **list_txt_files(const char *dir, size_t *count)
 {
@@ -353,7 +429,7 @@ char **list_txt_files(const char *dir, size_t *count)
         free(list);
         return NULL;
     }
-    list[0] = NULL;   /* kept NULL-terminated so free_txt_files() works anytime */
+    list[0] = NULL;
 
     while ((errno = 0, e = readdir(d)) != NULL) {
         size_t len = strlen(e->d_name);
@@ -374,7 +450,7 @@ char **list_txt_files(const char *dir, size_t *count)
         list[n++] = path;
         list[n] = NULL;
     }
-    if (errno != 0) goto fail;   /* readdir failed, not just end of folder */
+    if (errno != 0) goto fail;
 
     closedir(d);
     qsort(list, n, sizeof *list, cmp_str);
@@ -389,15 +465,23 @@ fail:
     return NULL;
 }
 
-
-/* True if arg is the short form, the long form, or "long=VALUE". */
+/*AI(claude) prompt: "Write a commandline argument parser for c. It should be able to handle the following arguments ProgramName [-d DIR | --dir DIR]
+ [-o OUTDIR | --output-dir OUTDIR] [input.txt]
+ It can either take the input DIR or the single file, not both.
+ In addition, also write af unctin that can create the OUTDIR if it doesnt exist."
+*/
 static int is_opt(const char *arg, const char *s, const char *l)
 {
     size_t n = strlen(l);
     return !strcmp(arg, s) || (!strncmp(arg, l, n) && (arg[n] == '\0' || arg[n] == '='));
 }
 
-/* Stores the option's value ("--opt=VAL" or the next argument) in *dest. */
+
+/*AI(claude) prompt: "Write a commandline argument parser for c. It should be able to handle the following arguments ProgramName [-d DIR | --dir DIR]
+ [-o OUTDIR | --output-dir OUTDIR] [input.txt]
+ It can either take the input DIR or the single file, not both.
+ In addition, also write af unctin that can create the OUTDIR if it doesnt exist."
+*/
 static int set_opt(const char **dest, int argc, char **argv, int *i, const char *name)
 {
     const char *eq = strchr(argv[*i], '=');
@@ -412,10 +496,15 @@ static int set_opt(const char **dest, int argc, char **argv, int *i, const char 
     return 0;
 }
 
-/* Returns 0 on success, -1 on error (message already printed). */
+
+/*AI(claude) prompt: "Write a commandline argument parser for c. It should be able to handle the following arguments ProgramName [-d DIR | --dir DIR]
+ [-o OUTDIR | --output-dir OUTDIR] [input.txt]
+ It can either take the input DIR or the single file, not both.
+ In addition, also write af unctin that can create the OUTDIR if it doesnt exist."
+*/
 int parse_args(int argc, char **argv, Options *o)
 {
-    int i, end = 0;  /* end = 1 after "--": everything is a filename */
+    int i, end = 0;
 
     o->dir = o->file = o->outdir = NULL;
     for (i = 1; i < argc; i++) {
@@ -438,8 +527,14 @@ int parse_args(int argc, char **argv, Options *o)
     return 0;
 }
 
-/* Creates path and any missing parents (like mkdir -p).
-   Returns 0 on success or if it already exists, -1 with errno set on error. */
+/*AI(claude) prompt: "Write a commandline argument parser for c. It should be able to handle the following arguments ProgramName [-d DIR | --dir DIR]
+ [-o OUTDIR | --output-dir OUTDIR] [input.txt]
+ It can either take the input DIR or the single file, not both.
+ In addition, also write af unctin that can create the OUTDIR if it doesnt exist."
+
+ Modified using: 
+ AI(claude) prompt: "The code can assume that the parent directory already exists. What does that change?"
+*/
 int create_directory(const char *path)
 {
     struct stat st;
@@ -450,46 +545,9 @@ int create_directory(const char *path)
     return 0;
 }
 
-//End written with claude
-
-
-//Written by Claude to fix memory overflow issue
-static size_t base_len(const char *name)
-{
-    size_t n = strlen(name);
-    return ends_with_txt(name, strlen(name)) ? n - 4 : n;
-}
-
-/* Returns a new string: the first len chars of a, followed by b.
-   The caller must free() it. Returns NULL if out of memory. */
-static char *concat(const char *a, size_t len, const char *b)
-{
-    size_t blen = strlen(b);
-    char *r = malloc(len + blen + 1);
-
-    if (r != NULL) {
-        memcpy(r, a, len);
-        memcpy(r + len, b, blen + 1);
-    }
-    return r;
-}
-
-/* "in" -> "in_hans_peter_2557", "notes.txt" -> "notes_hans_peter_2557".
-   Caller frees. */
-char *defaultOutputDir(const char *base)
-{
-    return concat(base, base_len(base), "_hans_peter_2557");
-}
-
-/* "notes.txt" -> "notes_hans_peter_2557.txt". Caller frees. */
-char *outputFileName(const char *filename)
-{
-    return concat(filename, base_len(filename), "_hans_peter_2557.txt");
-}
-
-/* Last component of path ("labs/task1.txt" -> "task1.txt", "labs/" -> "labs").
-   If strip_txt is set, a trailing ".txt" is excluded. Not NUL-terminated:
-   the length is stored in *len. */
+/*
+AI(claude) prompt: "Add functionality to the input and output files that supports these requirements:[4. The program section from the requirements]"
+*/
 static const char *input_base(const char *path, int strip_txt, int *len)
 {
     size_t end = strlen(path), start;
@@ -504,11 +562,12 @@ static const char *input_base(const char *path, int strip_txt, int *len)
 
 
 
-//End Written by claude
 
-/* Evaluates one line. offset = characters in the file before this line.
-   Returns 0 and stores the value in *result, a positive error position,
-   or -1 if out of memory. */
+/* 
+AI(claude) prompt: "This is my current file. As of right now it reads every file entirely and then processes it. 
+To make it possible to read larger files I instead want to process each line on its own. Each line is one calculation. 
+However due to the way errors are handled I need to keep the same pos and increase it accross all rows."
+*/
 static long long evaluate_line(const char *line, size_t len, long long offset, Number *result){
     Token *tokens = tokenize(line, len, offset);
     Parser parser;
@@ -516,11 +575,10 @@ static long long evaluate_line(const char *line, size_t len, long long offset, N
     if (tokens == NULL) return -1;
     parser.tokens = tokens;
     parser.pos = 0;
-    parser.error = 0;
+    parser.error = 0; /* 0 indicates no error*/
 
     *result = expr(&parser);
 
-    /* Parsed a full expression but the line continues, e.g. an extra ')' */
     if (parser.error == 0 && tokens[parser.pos].type != TOK_END) {
         parser.error = tokens[parser.pos].position;
     }
@@ -528,9 +586,13 @@ static long long evaluate_line(const char *line, size_t len, long long offset, N
     return parser.error;
 }
 
-/* Reads one line from fp into a new buffer *line (without the '\n'),
-   storing its length in *len. Returns 1 if a line was read, 0 at end of
-   file, -1 if out of memory. Caller frees *line. */
+/*
+Returns either -1 for read error, 1 for success and 0 for end of file
+
+AI(claude) prompt: "This is my current file. As of right now it reads every file entirely and then processes it. 
+To make it possible to read larger files I instead want to process each line on its own. Each line is one calculation. 
+However due to the way errors are handled I need to keep the same pos and increase it accross all rows."
+*/
 static int read_line(FILE *fp, char **line, size_t *len)
 {
     size_t n = 0, cap = 128;
@@ -548,7 +610,7 @@ static int read_line(FILE *fp, char **line, size_t *len)
         }
         buf[n++] = (char)c;
     }
-    if (c == EOF && n == 0) {   /* nothing left to read */
+    if (c == EOF && n == 0) {
         free(buf);
         return 0;
     }
@@ -558,8 +620,13 @@ static int read_line(FILE *fp, char **line, size_t *len)
     return 1;
 }
 
-/* True for lines that produce no output: blank lines and comment lines
-   (first non-blank character is '#'). */
+/*
+AI(Claude): "Analyse the file and implement this error handling: [5. Rules/Positions part]
+Also implement the comment functionality for the files as described here, remember to count the characters in the comment line as well 
+as its important for the errors: [5. Rules/Lines and output]"
+
+AI(claude) prompt: "Add functionality to the input and output files that supports these requirements:[4. The program section from the requirements]"
+*/
 static int skip_line(const char *line, size_t len)
 {
     size_t i = 0;
@@ -567,6 +634,7 @@ static int skip_line(const char *line, size_t len)
     while (i < len && isspace((unsigned char)line[i])) i++;
     return i == len || line[i] == '#';
 }
+
 
 void writeResult(FILE *fp, Number result){
     if(result.isInteger)
@@ -579,11 +647,25 @@ void writeResult(FILE *fp, Number result){
     }
 }
 
-/* Evaluates in_path line by line and writes one result per expression.
-   Positions count every character of the file (including '\n' and
-   comment lines). On the first error the output is replaced by
-   "ERROR:<pos>" only. Returns 0 on success (also when the file contained
-   an error), -1 if the files couldn't be read/written. */
+/*
+    Large file handling:
+    The entire file is never loaded as a whole. Instead we read and evaluate each line individually, growing the list for the line dynamically to ensure we use the least possible amount of memory.
+
+
+    
+    We track the position of each token by using an offset in the process_file function that gets increased by
+    the length of each line after the line has been tokenized. In the tokenize function the offset is used as the baseline.
+    The current position in the loop of tokenize is added onto offset (and one is added in addition because the error is supposed to be 1 indexed)
+    We use the offset to make it possible to keep one index across multiple rows.
+
+    Error gets written to file if the returned value is not null.
+
+    Each line is evaluated one at a time and one result is written.
+    The result can either be the successful result of an expression or an error
+    AI(claude) prompt: "This is my current file. As of right now it reads every file entirely and then processes it. 
+    To make it possible to read larger files I instead want to process each line on its own. Each line is one calculation. 
+    However due to the way errors are handled I need to keep the same pos and increase it accross all rows."
+*/
 int process_file(const char *in_path, const char *outdir){
     int len_base, status;
     const char *base = input_base(in_path, 1, &len_base);
@@ -597,8 +679,7 @@ int process_file(const char *in_path, const char *outdir){
         fprintf(stderr, "Error: out of memory\n");
         return -1;
     }
-    /* Binary mode so "\r\n" isn't shortened to "\n" on Windows:
-       every character in the file must be counted. */
+
     if ((in = fopen(in_path, "rb")) == NULL) {
         fprintf(stderr, "Error: cannot read '%s': %s\n", in_path, strerror(errno));
         free(out_path);
@@ -617,7 +698,7 @@ int process_file(const char *in_path, const char *outdir){
             error = evaluate_line(line, len, offset, &result);
             if (error == 0) writeResult(out, result);
         }
-        offset += (long long)len + 1;   /* +1 for the '\n' */
+        offset += (long long)len + 1;
         free(line);
         if (error != 0) break;
     }
@@ -631,7 +712,6 @@ int process_file(const char *in_path, const char *outdir){
     }
 
     if (error > 0) {
-        /* Throw away any partial results: reopen (truncates the file). */
         if ((out = freopen(out_path, "w", out)) == NULL) {
             fprintf(stderr, "Error: cannot write '%s': %s\n", out_path, strerror(errno));
             free(out_path);
@@ -645,6 +725,18 @@ int process_file(const char *in_path, const char *outdir){
     return 0;
 }
 
+
+/*Base main function written by me but modified multiple times by claude changes:
+
+AI(claude) prompt: "This is my current file. As of right now it reads every file entirely and then processes it. 
+To make it possible to read larger files I instead want to process each line on its own. Each line is one calculation. 
+However due to the way errors are handled I need to keep the same pos and increase it accross all rows."
+
+AI(claude) prompt: "Write a commandline argument parser for c. It should be able to handle the following arguments ProgramName [-d DIR | --dir DIR]
+ [-o OUTDIR | --output-dir OUTDIR] [input.txt]
+ It can either take the input DIR or the single file, not both.
+ In addition, also write af unctin that can create the OUTDIR if it doesnt exist."
+*/
 
 int main(int argc, char *argv[])
 {
@@ -666,7 +758,6 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
 
-    /* Default output folder in the current folder: <input_base>_name_id */
     if (o.outdir) {
         outdir = o.outdir;
     } else {
@@ -696,15 +787,9 @@ int main(int argc, char *argv[])
         }
         if (n == 0) printf("No .txt files found in '%s'\n", in);
         for (i = 0; i < n; i++) {
-            /* list_txt_files returns bare names, so prepend the folder */
-            char *path = build(in, files[i], (int)strlen(files[i]), "");
-            if (path == NULL || process_file(path, outdir) != 0) {
-                failed = 1;  /* keep going on errors */
-            }
-            free(path);
-            free(files[i]);
+            if (process_file(files[i],outdir) != 0) failed = 1;
         }
-        free(files);
+        free_txt_files(files);
         status = failed ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
